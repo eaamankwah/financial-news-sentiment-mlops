@@ -82,14 +82,17 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ secrets.AWS_REGION }}
-      - uses: aws-actions/amazon-ecr-login@v2
+      - id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
       - id: image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
         run: |
-          URI="${{ secrets.ECR_REGISTRY }}/${ECR_REPOSITORY}:${GITHUB_SHA}"
+          URI="${ECR_REGISTRY}/${ECR_REPOSITORY}:${GITHUB_SHA}"
           docker build -t "$URI" .
           docker push "$URI"
-          docker tag "$URI" "${{ secrets.ECR_REGISTRY }}/${ECR_REPOSITORY}:latest"
-          docker push "${{ secrets.ECR_REGISTRY }}/${ECR_REPOSITORY}:latest"
+          docker tag "$URI" "${ECR_REGISTRY}/${ECR_REPOSITORY}:latest"
+          docker push "${ECR_REGISTRY}/${ECR_REPOSITORY}:latest"
           echo "uri=$URI" >> "$GITHUB_OUTPUT"
   deploy:
     needs: build
