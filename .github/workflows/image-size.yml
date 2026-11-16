@@ -1,0 +1,23 @@
+# Manual workflow: build the baseline and the optimised image on a GitHub runner
+# (never in the lab workspace) and publish the before/after sizes in the job summary.
+name: image-size-report
+on:
+  workflow_dispatch:
+
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Free disk space (the baseline image is very large)
+        run: |
+          sudo rm -rf /usr/local/lib/android /opt/ghc /usr/share/dotnet || true
+          df -h /
+      - name: Build baseline and optimised images and compare
+        run: bash scripts/measure_image_sizes.sh | tee image-sizes.md
+      - name: Publish summary
+        run: cat image-sizes.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image-sizes
+          path: image-sizes.md

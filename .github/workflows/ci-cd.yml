@@ -1,0 +1,116 @@
+name: test-and-deploy
+on:
+  push:
+    branches: [main]
+    # Docs-only pushes do not run the pipeline. A push that also touches any
+    # other file (code, params, Dockerfile, this workflow...) still runs it.
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - '.gitignore'
+      - '.github/workflows/rollback.yml'
+      - '.github/workflows/image-size.yml'
+  workflow_dispatch:
+env:
+  ECR_REPOSITORY: finbert-api
+  TASK_DEFINITION: finbert-api
+  CONTAINER_NAME: finbert-api
+  ECS_SERVICE: finbert-api-service
+  ECS_CLUSTER: finbert-cluster
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install ruff
+      - run: ruff check app/ scripts/ tests/
+  test:
+    needs: lint
+    runs-on: ubuntu-latest
+    env:
+      MODEL_SOURCE: huggingface
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: pytest tests/
+  deepchecks:
+    needs: lint
+    runs-on: ubuntu-latest
+    env:
+      MODEL_SOURCE: huggingface
+      HF_DATASET_ID: baptle/financial_headlines_market_based
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Prepare data with DVC
+        # --no-scm -f: works with or without a committed .dvc/ (do not combine --no-scm with --subdir: DVC rejects it)
+        run: |
+          dvc init --no-scm -f
+          dvc repro
+      - name: Deepchecks drift gate
+        # exit 1 = drift gate failed, exit 2 = the check could not run
+        run: python scripts/run_deepchecks.py
+      - name: Upload drift report (read by rollback.yml)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: drift-report
+          path: drift_result.json
+          if-no-files-found: ignore
+  build:
+    needs: [test, deepchecks]
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.image.outputs.uri }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+      - uses: aws-actions/amazon-ecr-login@v2
+      - id: image
+        run: |
+          URI="${{ secrets.ECR_REGISTRY }}/${ECR_REPOSITORY}:${GITHUB_SHA}"
+          docker build -t "$URI" .
+          docker push "$URI"
+          docker tag "$URI" "${{ secrets.ECR_REGISTRY }}/${ECR_REPOSITORY}:latest"
+          docker push "${{ secrets.ECR_REGISTRY }}/${ECR_REPOSITORY}:latest"
+          echo "uri=$URI" >> "$GITHUB_OUTPUT"
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+      - run: aws ecs describe-task-definition --task-definition "$TASK_DEFINITION" --query taskDefinition > task-definition.json
+      - uses: aws-actions/amazon-ecs-render-task-definition@v1
+        id: render
+        with:
+          task-definition: task-definition.json
+          container-name: finbert-api
+          image: ${{ needs.build.outputs.image }}
+      - uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.render.outputs.task-definition }}
+          service: finbert-api-service
+          cluster: finbert-cluster
+          wait-for-service-stability: true

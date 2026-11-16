@@ -1,0 +1,15 @@
+# Runtime-only dependencies for the production image (no tests, DVC, Deepchecks, Locust).
+# CPU-only PyTorch: the wheel comes from the PyTorch CPU index, which avoids the
+# multi-GB CUDA/nvidia packages that the default PyPI torch wheel pulls in.
+# NOTE: --no-cache-dir is a pip *command* option and is NOT valid inside a
+# requirements file (pip fails with "no such option"). It is passed in the Dockerfile.
+--extra-index-url https://download.pytorch.org/whl/cpu
+fastapi==0.111.0
+uvicorn==0.29.0
+pydantic==2.7.1
+python-dotenv==1.0.1
+prometheus-client==0.20.0
+transformers>=4.40.2,<5
+torch==2.4.1+cpu
+mlflow==2.16.2
+boto3==1.34.101

@@ -1,0 +1,63 @@
+# Model rollback: when the Deepchecks drift gate fails in the "test-and-deploy"
+# workflow, point the MLflow `production` alias back at the previous model version.
+#
+# Triggers
+#   * automatic  - after test-and-deploy completes with failure AND its
+#                  drift-report artifact says drift_failed=true (a failing test,
+#                  lint or AWS step does NOT trigger a rollback)
+#   * manual     - Actions tab -> "rollback-on-drift" -> Run workflow
+#
+# Requirements: repository secret MLFLOW_TRACKING_URI that is reachable from
+# GitHub-hosted runners (a localhost MLflow server is not).
+# Note: workflow_run workflows only fire from the default branch.
+name: rollback-on-drift
+on:
+  workflow_run:
+    workflows: [test-and-deploy]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  rollback:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'failure' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install mlflow==2.16.2 python-dotenv==1.0.1
+
+      - name: Download drift report from the failed run
+        if: ${{ github.event_name == 'workflow_run' }}
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: drift-report
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Decide whether this failure was a drift-gate failure
+        id: gate
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "rollback=true" >> "$GITHUB_OUTPUT"
+          elif [ -f drift_result.json ] && python -c "import json,sys; sys.exit(0 if json.load(open('drift_result.json')).get('drift_failed') else 1)"; then
+            echo "Drift gate failed -> rolling back"
+            echo "rollback=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Run failed for a reason other than drift -> no rollback"
+            echo "rollback=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Roll back production alias to previous model version
+        if: ${{ steps.gate.outputs.rollback == 'true' }}
+        env:
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+          MODEL_NAME: finbert
+        run: python scripts/rollback.py

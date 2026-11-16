@@ -1,0 +1,8 @@
+{
+  "property": "Sentiment",
+  "property_drift": 0.2912954390854944,
+  "property_threshold": 0.5,
+  "prediction_drift": 0.23166959033265977,
+  "prediction_threshold": 0.6,
+  "drift_failed": false
+}

@@ -1,0 +1,32 @@
+services:
+  api:
+    build:
+      context: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      # inside the container, MLflow runs on the host machine
+      MLFLOW_TRACKING_URI: http://host.docker.internal:5000
+    volumes:
+      - ./mlruns:/service/mlruns
+      - ./mlartifacts:/service/mlartifacts
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s   # the model takes a while to load
+
+  # Optional: scrapes api:8000/metrics (see prometheus.yml). UI on http://localhost:9090
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - api
